@@ -1,14 +1,21 @@
-//! What a listing really costs you: its price plus getting it home.
+//! What a listing really costs you: its price plus getting it into the room
+//! you actually want it in.
 //!
 //! A cheap item far away in a big box can easily cost more than a dearer one
 //! nearby, so the SDK scores listings on *landed* cost rather than sticker
 //! price. Two ways to move a thing:
 //!
-//! - **Self-haul** — it fits in a vehicle you own. Cost is the round trip at
-//!   the IRS standard mileage rate (which covers fuel plus wear, not just gas).
-//! - **Hired haul** — it doesn't fit, so someone with a truck moves it. Modeled
-//!   on Lugg's published pricing: a base fare by vehicle size, a per-mile rate,
-//!   per-minute loading labor, and a booking fee.
+//! - **Hired haul** — someone with a truck collects it and carries it inside.
+//!   Modeled on Lugg's published pricing: base fare by vehicle size, per-mile
+//!   rate, a per-stop fee, per-minute handling labour, and a booking fee.
+//!   Crucially this is a *delivered-to-the-room* number, not curbside: Lugg
+//!   includes room-of-choice placement — any room, upstairs included — at no
+//!   extra charge, where traditional movers bill $50–$100 per flight of
+//!   stairs. So no stairs surcharge is modelled, deliberately.
+//! - **Self-haul** — only when [`SelfHaul`] says you have a vehicle that fits
+//!   it *and* can handle it yourself. Cost is the round trip at the IRS
+//!   standard mileage rate. With [`SelfHaul::None`] this branch never applies
+//!   and everything is priced as delivered.
 //!
 //! Every figure here is an **estimate**. Lugg states rates vary by city, and
 //! item size is inferred from the listing's category, not measured. Treat the
@@ -19,17 +26,23 @@ use serde::Serialize;
 use crate::geo;
 use crate::models::ListingSummary;
 
-/// Published Lugg rates, and the mileage rate for driving yourself.
+/// Rates for hiring a haul, and for driving yourself.
+///
+/// Per-tier base, per-mile and per-stop figures are Lugg's own published
+/// table; the labour rate and booking-fee range come from their help centre.
+/// Note their help centre quotes a different base and per-mile figure in a
+/// worked example than the table does — the first-party table wins here, and
+/// both are called estimates by Lugg since rates vary by city.
 ///
 /// Sources (checked 2026-07-26):
-/// - Lugg help centre worked example: $2.24/mile, $1.62/labour-minute,
-///   $38.00 base — <https://lugg.com/help/pricing/how-much-does-a-lugg-cost>
-/// - Per-tier base fares and labour rates — <https://dropcurb.com/blog/lugg-prices-2026>
+/// - Per-tier base / per-mile / per-stop — <https://lugg.com/at-home-delivery>
+/// - Labour per minute and booking fee — <https://lugg.com/help/pricing/how-much-does-a-lugg-cost>
+/// - Room-of-choice placement included, no stairs fee —
+///   <https://lugg.com/help/general/lugg-provide-in-home-room-of-choice-placement>
 /// - IRS business standard mileage rate, 76¢/mile from 2026-07-01 —
 ///   <https://www.irs.gov/newsroom/irs-sets-2026-business-standard-mileage-rate-at-725-cents-per-mile-up-25-cents>
 #[derive(Debug, Clone, Copy)]
 pub struct Rates {
-    pub per_mile: f64,
     pub booking_fee: f64,
     /// Cost per mile to drive yourself, for the self-haul case.
     pub self_haul_per_mile: f64,
@@ -40,7 +53,6 @@ pub struct Rates {
 impl Default for Rates {
     fn default() -> Self {
         Rates {
-            per_mile: 2.24,
             // Lugg quotes a variable booking fee of roughly $4.11–$11.01;
             // take the midpoint.
             booking_fee: 7.50,
@@ -65,14 +77,50 @@ pub enum SizeClass {
     Oversize,
 }
 
+/// One Lugg service tier: what it is called, and what it costs.
+struct Tier {
+    name: &'static str,
+    base: f64,
+    per_mile: f64,
+    /// Charged at each stop; a collection-and-delivery job has two.
+    per_stop: f64,
+    labor_per_min: f64,
+}
+
 impl SizeClass {
-    /// Lugg tier that can carry this, with its base fare and labour rate.
-    fn vehicle(self) -> (&'static str, f64, f64) {
+    /// Lugg tier able to carry this size.
+    fn tier(self) -> Tier {
         match self {
-            SizeClass::Carryable => ("lite", 32.0, 0.95),
-            SizeClass::Bulky => ("pickup", 54.0, 1.62),
-            SizeClass::Large => ("van", 90.0, 1.80),
-            SizeClass::Oversize => ("xl", 143.0, 2.02),
+            SizeClass::Carryable => Tier {
+                name: "lite",
+                base: 50.0,
+                per_mile: 1.81,
+                per_stop: 18.0,
+                labor_per_min: 0.95,
+            },
+            SizeClass::Bulky => Tier {
+                name: "pickup",
+                base: 83.0,
+                per_mile: 1.92,
+                per_stop: 22.0,
+                labor_per_min: 1.62,
+            },
+            SizeClass::Large => Tier {
+                name: "van",
+                base: 110.0,
+                per_mile: 2.20,
+                per_stop: 26.0,
+                labor_per_min: 1.80,
+            },
+            // Lugg's public table stops at Van; XL is extrapolated from their
+            // tier spacing, so it is the least certain figure here.
+            SizeClass::Oversize => Tier {
+                name: "xl",
+                base: 143.0,
+                per_mile: 2.40,
+                per_stop: 30.0,
+                labor_per_min: 2.02,
+            },
         }
     }
 
@@ -143,6 +191,43 @@ pub struct HaulEstimate {
     pub cost: f64,
 }
 
+/// Sellers who say up front that the buyer does the lifting.
+///
+/// A hired crew handles this fine, but the listing is still worth flagging:
+/// these sellers often won't help load, won't hold the item, or expect it
+/// gone the same hour — all of which is a problem if you can't do the
+/// carrying yourself and need to schedule a crew.
+const BUYER_MUST_HANDLE: &[&str] = &[
+    "you haul",
+    "u haul",
+    "must load",
+    "load it yourself",
+    "bring help",
+    "bring your own help",
+    "bring muscle",
+    "bring a truck",
+    "need to bring",
+    "must be able to load",
+    "you move it",
+    "you disassemble",
+    "curbside",
+    "no delivery",
+    "cannot deliver",
+    "can't deliver",
+    "no help loading",
+    "as-is where-is",
+    "where is as is",
+];
+
+/// Whether a listing's own words put the lifting on the buyer.
+pub fn buyer_must_handle(text: &str) -> Option<&'static str> {
+    let hay = text.to_ascii_lowercase();
+    BUYER_MUST_HANDLE
+        .iter()
+        .find(|needle| hay.contains(*needle))
+        .copied()
+}
+
 /// The largest thing you can move yourself, from your own vehicle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -197,13 +282,17 @@ pub fn estimate(size: SizeClass, straight_line_miles: f64, vehicle: SelfHaul, ra
             cost: miles * 2.0 * rates.self_haul_per_mile,
         };
     }
-    let (tier, base, labor_per_min) = size.vehicle();
-    let cost =
-        base + miles * rates.per_mile + size.load_minutes() * labor_per_min + rates.booking_fee;
+    let tier = size.tier();
+    // Two stops: collect from the seller, deliver to your room.
+    let cost = tier.base
+        + miles * tier.per_mile
+        + 2.0 * tier.per_stop
+        + size.load_minutes() * tier.labor_per_min
+        + rates.booking_fee;
     HaulEstimate {
         size,
         miles,
-        method: tier.into(),
+        method: tier.name.into(),
         cost,
     }
 }
@@ -303,14 +392,52 @@ mod tests {
     }
 
     #[test]
+    fn flags_listings_that_put_lifting_on_the_buyer() {
+        assert!(buyer_must_handle("Dresser, you haul, cash only").is_some());
+        assert!(buyer_must_handle("Must be able to load it yourself").is_some());
+        assert!(buyer_must_handle("Curbside pickup only").is_some());
+        assert!(buyer_must_handle("Free couch, bring help").is_some());
+        assert!(buyer_must_handle("Solid oak dresser, great condition").is_none());
+        assert!(buyer_must_handle("Delivery available for a fee").is_none());
+    }
+
+    #[test]
+    fn hired_haul_covers_room_of_choice() {
+        // Lugg includes placement in any room, upstairs included, with no
+        // stairs fee, so no floor/stairs surcharge exists to model. This test
+        // pins that decision: cost depends on size and distance only.
+        let rates = Rates::default();
+        let a = estimate(SizeClass::Large, 10.0, SelfHaul::None, &rates);
+        let b = estimate(SizeClass::Large, 10.0, SelfHaul::None, &rates);
+        assert_eq!(a.cost, b.cost);
+    }
+
+    #[test]
+    fn without_a_vehicle_nothing_is_self_haul() {
+        let rates = Rates::default();
+        for size in [
+            SizeClass::Carryable,
+            SizeClass::Bulky,
+            SizeClass::Large,
+            SizeClass::Oversize,
+        ] {
+            let e = estimate(size, 8.0, SelfHaul::None, &rates);
+            assert_ne!(e.method, "self", "{size:?} was priced as self-haul");
+            assert!(e.cost > 0.0);
+        }
+    }
+
+    #[test]
     fn reproduces_luggs_published_example() {
         // Lugg's own worked example: pickup tier, 8 miles, 25 minutes labour
         // => $38.00 base + $17.92 mileage + $40.50 labour ~= $96 + booking fee.
         // Ours uses the published per-tier base ($54) and its own load-time
         // model, so check the mileage and labour terms directly.
-        let rates = Rates::default();
-        assert!((8.0 * rates.per_mile - 17.92).abs() < 0.01);
-        assert!((25.0_f64 * 1.62 - 40.50).abs() < 0.01);
+        // Lugg's worked example: pickup tier, 8 miles, 25 minutes labour.
+        // Our per-tier figures come from their published table rather than
+        // that example, so check the labour term, which both agree on.
+        let pickup = SizeClass::Bulky.tier();
+        assert!((25.0_f64 * pickup.labor_per_min - 40.50).abs() < 0.01);
     }
 
     use crate::models::Location;

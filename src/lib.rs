@@ -43,7 +43,7 @@ pub use client::{KslClient, KslClientBuilder};
 pub use config::{ClientConfig, Config, WatchConfig};
 pub use error::{Error, Result};
 pub use geo::miles_between;
-pub use haul::{HaulEstimate, Rates, SelfHaul, SizeClass, landed_cost};
+pub use haul::{HaulEstimate, Rates, SelfHaul, SizeClass, buyer_must_handle, landed_cost};
 pub use models::{
     Image, ListingDetail, ListingSummary, Location, PageInfo, SearchPage, SearchQuery, Sort,
 };

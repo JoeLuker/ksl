@@ -23,6 +23,18 @@ A Rust SDK + CLI (`ksl`) for **KSL Classifieds** (classifieds.ksl.com): typed se
 - `flight.rs` — parses React flight payloads (`text/x-component`); finds the result row structurally (object with `pageInfo`+`items`), not by row id.
 - `jsonld.rs` — lifts schema.org `Product` JSON-LD out of listing pages by string-scanning script tags (deliberately no HTML parser: JSON-LD is the change-resistant surface).
 - `models.rs` — `SearchQuery` (builder; flat string filter map), `ListingSummary`, `SearchPage`/`PageInfo`, `ListingDetail`, `Sort`.
+- `geo.rs` — ZIP→ZIP distance from bundled US Census 2024 ZCTA centroids (`data/zip_centroids.csv`, Mountain West only, public domain). An unknown ZIP yields `None`, never a guessed distance.
+- `haul.rs` — **landed cost**: what a listing costs *delivered into the room*, not its sticker price. Size is inferred from KSL's category taxonomy; cost is either a self-haul round trip at the IRS mileage rate or a hired haul on Lugg's published tiers. Rate constants carry their sources inline — re-check them rather than nudging the numbers.
+
+### The owner's constraints are part of the model, not a preset
+
+This tool is built for one user, who **has no vehicle and cannot lift**. That is why:
+
+- `self_haul: none` is his real configuration, so *every* listing prices as a hired, delivered haul. Do not "helpfully" default him to a vehicle; a self-haul number is not a thing he can act on.
+- No stairs or floor surcharge is modelled, and that is deliberate rather than an omission: Lugg includes room-of-choice placement to any room, upstairs included, at no extra charge (traditional movers bill $50–$100 per flight). So the haul figure already *is* the into-the-bedroom figure.
+- With `self_haul: none`, listings whose own text demands the buyer load or carry ("you haul", "must load", "curbside", "bring help") are flagged with a leading `!`. A hired crew can do the lifting, but these sellers frequently won't hold the item for one to be scheduled.
+
+**Known gap:** assembly is not modelled. Lugg moves and places, but does not assemble, so a flat-pack or bed-frame listing carries an unpriced cost he cannot absorb himself.
 - `watch.rs` — `Watcher`: polls newest-first, walks continuation pages only while a page is entirely unseen (watermark logic), first poll baselines without emitting, atomic state save, gives up after 5 consecutive failed polls.
 - `main.rs` — clap CLI (`search`/`listing`/`watch`).
 

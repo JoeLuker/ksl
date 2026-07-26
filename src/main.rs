@@ -393,6 +393,8 @@ struct Scored {
     item: ksl::ListingSummary,
     haul: Option<ksl::HaulEstimate>,
     landed: Option<f64>,
+    /// Set when the listing's own words put the lifting on the buyer.
+    buyer_lifts: Option<String>,
 }
 
 impl Scored {
@@ -404,7 +406,19 @@ impl Scored {
             Some((haul, total)) => (Some(haul), Some(total)),
             None => (None, None),
         };
-        Scored { item, haul, landed }
+        // Only meaningful when you can't do the lifting yourself; a hired
+        // crew handles it, but these sellers often won't wait for one.
+        let buyer_lifts = if config.self_haul == ksl::SelfHaul::None {
+            ksl::buyer_must_handle(&item.title).map(str::to_string)
+        } else {
+            None
+        };
+        Scored {
+            item,
+            haul,
+            landed,
+            buyer_lifts,
+        }
     }
 
     fn as_json(&self) -> serde_json::Value {
@@ -414,6 +428,9 @@ impl Scored {
         {
             obj.insert("haul".into(), serde_json::to_value(haul).unwrap_or_default());
             obj.insert("landedCost".into(), serde_json::json!(landed));
+        }
+        if let (Some(obj), Some(flag)) = (value.as_object_mut(), self.buyer_lifts.as_ref()) {
+            obj.insert("buyerMustHandle".into(), serde_json::json!(flag));
         }
         value
     }
@@ -436,15 +453,19 @@ impl Scored {
                 )
             })
             .unwrap_or_default();
+        // A leading "!" marks a listing whose own words put the lifting on
+        // the buyer — a hired crew can do it, but these sellers often won't
+        // wait for one to be scheduled.
+        let flag = if self.buyer_lifts.is_some() { "!" } else { " " };
         match (&self.haul, self.landed) {
             (Some(haul), Some(landed)) => println!(
-                "{:>8} +{:>6} = {:>8}  {:>5.0}mi {:<9} {:<48}  {:<18}  {}",
+                "{flag}{:>7} +{:>6} = {:>8}  {:>5.0}mi {:<9} {:<46}  {:<18}  {}",
                 price,
                 format!("${:.0}", haul.cost),
                 format!("${landed:.0}"),
                 haul.miles,
                 haul.method,
-                truncate(&self.item.title, 48),
+                truncate(&self.item.title, 46),
                 location,
                 self.item.url()
             ),
