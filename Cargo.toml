@@ -1,0 +1,33 @@
+[package]
+name = "ksl"
+version = "0.1.0"
+edition = "2024"
+description = "SDK and CLI for KSL Classifieds: typed search, listing details, and a new-listing watcher"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+directories = "5"
+regex = "1"
+reqwest = { version = "0.13", default-features = false, features = [
+    "rustls",
+    "system-proxy",
+    "gzip",
+    "json",
+    # http2: KSL serves HTTP/2. Without this feature reqwest silently speaks
+    # HTTP/1.1, which is both slower and inconsistent with everything else we
+    # present. charset restores correct non-UTF-8 text decoding.
+    "http2",
+    "charset",
+    # cookies: the site sets a long-lived _pxhd device cookie. Holding and
+    # returning it makes us a consistent, recognizable returning client rather
+    # than an unidentified stranger on every single request.
+    "cookies",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10.0"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
