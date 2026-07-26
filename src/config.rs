@@ -12,6 +12,8 @@
 //!   max_retries: 3
 //!   block_cooloff_secs: 1800   # stay away this long after a hard block
 //! state_dir: ~/ksl-data          # optional; default: platform data dir
+//! home_zip: "84119"             # enables landed-cost scoring
+//! self_haul: suv                # none|car|suv|pickup
 //! watches:
 //!   - name: cheap-kayaks
 //!     keyword: kayak
@@ -31,6 +33,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
+use crate::geo;
+use crate::haul::SelfHaul;
 use crate::models::{SearchQuery, Sort};
 
 #[derive(Debug, Default, Deserialize)]
@@ -41,6 +45,14 @@ pub struct Config {
     /// Directory for watch state, events, and the action-id cache.
     #[serde(default)]
     pub state_dir: Option<PathBuf>,
+    /// Your ZIP code. Enables landed-cost scoring: how far away a listing is
+    /// and how big it is both add to what it really costs you.
+    #[serde(default)]
+    pub home_zip: Option<String>,
+    /// The largest thing you can move yourself: none|car|suv|pickup.
+    /// Anything bigger is priced as a hired haul.
+    #[serde(default)]
+    pub self_haul: SelfHaul,
     #[serde(default)]
     pub watches: Vec<WatchConfig>,
 }
@@ -144,6 +156,14 @@ impl Config {
                  the site rate-limits bursts hard"
                     .into(),
             ));
+        }
+        if let Some(zip) = &self.home_zip {
+            if geo::coords(zip).is_none() {
+                return Err(Error::Config(format!(
+                    "home_zip {zip:?} is not in the bundled ZIP table \
+                     (Mountain West only); landed-cost scoring needs a known ZIP"
+                )));
+            }
         }
         let mut names = BTreeSet::new();
         for watch in &self.watches {

@@ -1,0 +1,14 @@
+zip_centroids.csv
+-----------------
+Format: <zip>,<latitude>,<longitude>
+
+Source: US Census Bureau, 2024 ZIP Code Tabulation Area (ZCTA) Gazetteer file
+        https://www2.census.gov/geo/docs/maps-data/data/gazetteer/2024_Gazetteer/
+Fields used: GEOID (ZCTA), INTPTLAT, INTPTLONG (interior point / centroid).
+Filtered to ZIPs beginning with "8" (the Mountain West), which is the region
+KSL Classifieds serves; coordinates rounded to 4 decimal places (~11 m).
+
+US Census Bureau data is in the public domain.
+
+To regenerate, download the national ZCTA gazetteer above and keep the GEOID,
+INTPTLAT and INTPTLONG columns for GEOIDs starting with "8".

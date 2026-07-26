@@ -31,6 +31,10 @@ enum Command {
         /// Pages to fetch (cursor-chained).
         #[arg(long, default_value_t = 1)]
         pages: u32,
+        /// Re-rank the fetched results by landed cost (price + estimated
+        /// haul), cheapest first. Needs `home_zip` in the config.
+        #[arg(long)]
+        by_landed_cost: bool,
     },
     /// Show one listing's details (from its structured data).
     Listing { id: u64 },
@@ -184,30 +188,60 @@ async fn run(cli: Cli) -> ksl::Result<()> {
             keyword,
             filters,
             pages,
+            by_landed_cost,
         } => {
             let state_dir = resolve_state_dir(None, &config);
             let client = build_client(&config, &state_dir)?;
             let query = filters.into_query(keyword);
+
+            if by_landed_cost && config.home_zip.is_none() {
+                return Err(ksl::Error::Config(
+                    "--by-landed-cost needs `home_zip` in the config file".into(),
+                ));
+            }
+
+            let mut collected = Vec::new();
             let mut page = client.search(&query).await?;
             let total = page.page_info.total;
-            let mut shown = 0usize;
             for page_no in 1.. {
-                for item in &page.items {
-                    shown += 1;
-                    if cli.json {
-                        println!("{}", serde_json::to_string(item)?);
-                    } else {
-                        print_summary(item);
-                    }
-                }
+                collected.extend(page.items.iter().cloned());
                 if page_no >= pages || !page.page_info.has_next_page {
                     break;
                 }
                 let cursor = page.page_info.end_cursor.as_deref().unwrap_or_default();
                 page = client.search_after(&query, cursor).await?;
             }
+
+            let mut scored: Vec<Scored> = collected
+                .into_iter()
+                .map(|item| Scored::new(item, &config))
+                .collect();
+            if by_landed_cost {
+                // Unpriceable listings (unknown ZIP) sort last rather than
+                // being silently dropped or treated as free.
+                scored.sort_by(|a, b| match (a.landed, b.landed) {
+                    (Some(x), Some(y)) => x.total_cmp(&y),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                });
+            }
+
+            let shown = scored.len();
+            for s in &scored {
+                if cli.json {
+                    println!("{}", serde_json::to_string(&s.as_json())?);
+                } else {
+                    s.print();
+                }
+            }
             if !cli.json {
                 eprintln!("({shown} of {total} results)");
+                if config.home_zip.is_none() {
+                    eprintln!(
+                        "note: set `home_zip` in the config to see landed cost (price + haul)"
+                    );
+                }
             }
         }
         Command::Listing { id } => {
@@ -317,6 +351,17 @@ async fn run(cli: Cli) -> ksl::Result<()> {
                 config.client.block_cooloff_secs
             );
             println!("state dir: {}", state_dir.display());
+            match &config.home_zip {
+                Some(zip) => {
+                    let place = ksl::miles_between(zip, zip).map(|_| "known").unwrap_or("unknown");
+                    println!(
+                        "home: {zip} ({place} ZIP)   self-haul: {:?}   \
+                         -> landed cost = price + haul",
+                        config.self_haul
+                    );
+                }
+                None => println!("home: unset — landed-cost scoring disabled"),
+            }
             if config.watches.is_empty() {
                 println!("watches: none");
             } else {
@@ -342,29 +387,82 @@ async fn run(cli: Cli) -> ksl::Result<()> {
     Ok(())
 }
 
-fn print_summary(item: &ksl::ListingSummary) {
-    let price = item
-        .price
-        .map(|p| format!("${p:.0}"))
-        .unwrap_or_else(|| "-".into());
-    let location = item
-        .location
-        .as_ref()
-        .map(|l| {
-            format!(
-                "{}, {}",
-                l.city.as_deref().unwrap_or("?"),
-                l.state.as_deref().unwrap_or("?")
-            )
-        })
-        .unwrap_or_default();
-    println!(
-        "{:>8}  {:<60}  {:<20}  {}",
-        price,
-        item.title,
-        location,
-        item.url()
-    );
+/// A listing plus, when a home ZIP is configured, what it would really cost
+/// to own: asking price plus the estimated haul home.
+struct Scored {
+    item: ksl::ListingSummary,
+    haul: Option<ksl::HaulEstimate>,
+    landed: Option<f64>,
+}
+
+impl Scored {
+    fn new(item: ksl::ListingSummary, config: &ksl::Config) -> Self {
+        let scored = config.home_zip.as_deref().and_then(|home| {
+            ksl::landed_cost(&item, home, config.self_haul, &ksl::Rates::default())
+        });
+        let (haul, landed) = match scored {
+            Some((haul, total)) => (Some(haul), Some(total)),
+            None => (None, None),
+        };
+        Scored { item, haul, landed }
+    }
+
+    fn as_json(&self) -> serde_json::Value {
+        let mut value = serde_json::to_value(&self.item).unwrap_or(serde_json::Value::Null);
+        if let (Some(obj), Some(haul), Some(landed)) =
+            (value.as_object_mut(), self.haul.as_ref(), self.landed)
+        {
+            obj.insert("haul".into(), serde_json::to_value(haul).unwrap_or_default());
+            obj.insert("landedCost".into(), serde_json::json!(landed));
+        }
+        value
+    }
+
+    fn print(&self) {
+        let price = self
+            .item
+            .price
+            .map(|p| format!("${p:.0}"))
+            .unwrap_or_else(|| "-".into());
+        let location = self
+            .item
+            .location
+            .as_ref()
+            .map(|l| {
+                format!(
+                    "{}, {}",
+                    l.city.as_deref().unwrap_or("?"),
+                    l.state.as_deref().unwrap_or("?")
+                )
+            })
+            .unwrap_or_default();
+        match (&self.haul, self.landed) {
+            (Some(haul), Some(landed)) => println!(
+                "{:>8} +{:>6} = {:>8}  {:>5.0}mi {:<9} {:<48}  {:<18}  {}",
+                price,
+                format!("${:.0}", haul.cost),
+                format!("${landed:.0}"),
+                haul.miles,
+                haul.method,
+                truncate(&self.item.title, 48),
+                location,
+                self.item.url()
+            ),
+            _ => println!(
+                "{price:>8}  {:<60}  {location:<20}  {}",
+                truncate(&self.item.title, 60),
+                self.item.url()
+            ),
+        }
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let kept: String = s.chars().take(max.saturating_sub(1)).collect();
+    format!("{kept}\u{2026}")
 }
 
 fn print_detail(detail: &ksl::ListingDetail) {
