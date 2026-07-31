@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Deterministic exit gate for grind mode (see ~/.claude/CLAUDE.md, "Grind mode").
+#
+# The Stop hook runs this EVERY TURN when .claude/grind exists: exit 0 lets the
+# turn end, non-zero blocks and feeds the failure back as the next lever. Inert
+# without that sentinel, so this changes nothing until grind is switched on here.
+#
+# Keep it FAST and keep it GREEN. A gate that starts red trains you to bypass it,
+# which is worse than no gate. Verified passing when written (2026-07-31).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+# No runnable test suite here yet, so flake evaluation is the gate — the same
+# deterministic stand-in ~/.dotfiles/.githooks/pre-push uses. If a suite lands,
+# add it above this line rather than replacing it.
+nix flake check --no-build
