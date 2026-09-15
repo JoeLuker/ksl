@@ -1,0 +1,18 @@
+# Every mechanism this project runs under, declared once; claude-hooks-rs
+# reads this file and nothing else repeats it. `claude-hooks-rs harness-check`
+# validates it on every write, `claude-hooks-rs harness-gate` runs the gate by
+# hand.
+
+# grind-stop: the Stop hook refuses to end a turn while the gate is red.
+[grind]
+
+# No runnable test suite here yet, so flake evaluation is the gate — the same
+# deterministic stand-in ~/.dotfiles/.githooks/pre-push uses. When a suite
+# lands, add it as a step above this one rather than replacing it.
+[[gate.step]]
+name = "the flake evaluates"
+run = "nix flake check --no-build"
+
+[[validator]]
+path = '^\.claude/harness\.toml$'
+command = "claude-hooks-rs harness-check"
